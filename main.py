@@ -69,8 +69,41 @@ def raw_audio_processor(raw_frames_queue: queue.Queue, buffered_audio_queue: que
 
         
 
-def audio_chunks_processor(buffered_audio_queue: queue.Queue):
+def count_syllables(audio, sampling_rate):
+    # FIXME: add implementation
+    return 1
+
+def notify_too_fast():
+    # FIXME: add implementation
     pass
+
+def audio_chunks_processor(buffered_audio_queue: queue.Queue, target_speech_rate: float):
+    """
+    target_speech_rate - words per minute
+    """
+
+    target_syllables_per_seconds = target_speech_rate * 4.0 / 60
+    print(f"target speech rate: {target_syllables_per_seconds} syl/sec")
+
+    last_notification_sent_at = None
+    notifications_interval_ms = 5000
+
+    while True:
+        audio_block = buffered_audio_queue.get()
+        sampling_rate = 1 # FIXME
+        audio_length = 5 # seconds FIXME
+
+        syllables_count = count_syllables(audio_block, sampling_rate) / audio_length
+
+        if syllables_count > target_speech_rate:
+            print(f"speech rate is too large: {syllables_count}")
+
+            now = time.time_ns() // 1_000_000 
+            if last_notification_sent_at is None or (now - last_notification_sent_at >= notifications_interval_ms):
+                last_notification_sent_at = now
+                notify_too_fast()
+
+
 
 
 
