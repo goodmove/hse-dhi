@@ -7,8 +7,15 @@ import threading
 import bot
 
 
-CHANNELS = 1
-SAMPLE_RATE = 22050
+# *************** Utils ***************
+
+def run_daemon(callable):
+    t = threading.Thread(None, callable)
+    t.setDaemon(True)
+    t.start()
+
+
+# *************** Common Datatypes ***************
 
 class States:
     IDLE = "IDLE"
@@ -33,6 +40,7 @@ class SpeechChunk:
         self.sample_rate = sample_rate
 
 
+# *************** Pipeline Stages ***************
 
 def mk_audio_callback(state: ProgramState, frames_queue: queue.Queue):
     def audio_callback(indata, frames, time, status):
@@ -136,6 +144,8 @@ def audio_chunks_processor(state: ProgramState, bot_proxy: bot.BotProxy, buffere
             print(e)
 
 
+# *************** Runloop ***************
+
 
 def run_main_loop(state: ProgramState):
     input_text = None
@@ -160,49 +170,37 @@ def run_main_loop(state: ProgramState):
     except Exception as e:
         print(e)
 
-def send_dummy_messages(speech_chunks_queue):
-    while True:
-        try:
-            speech_chunks_queue.put(SpeechChunk([], buffer_length_ms, SAMPLE_RATE))
-            print("put dummy chunk")
-            
-        except Exception as e:
-            print(e)
+
+if __name__ == "__main__":
+    try: 
+        CHANNELS = 1
+        SAMPLE_RATE = 22050
+        USERNAME = "goodmove"
+
+        buffer_length_ms = 5000
+        window_length_ms = 1000
+        target_speech_rate = 120 # words per minute
+
+        state = ProgramState()
+        bot_proxy = bot.init_bot()
+        raw_audio_frames_queue = queue.Queue()
+        speech_chunks_queue = queue.Queue()
+
+        bot_proxy.set_target_user(USERNAME)
+
+        stream = sd.InputStream(channels=CHANNELS, samplerate=SAMPLE_RATE, callback=mk_audio_callback(state, raw_audio_frames_queue))
+
+        with stream:
+            run_daemon(lambda: raw_audio_processor(raw_audio_frames_queue, speech_chunks_queue, buffer_length_ms, window_length_ms, SAMPLE_RATE))
+            run_daemon(lambda: audio_chunks_processor(state, bot_proxy, speech_chunks_queue, target_speech_rate))
         
-        time.sleep(5)
+            run_main_loop(state)
 
-def run_daemon(callable):
-    t = threading.Thread(None, callable)
-    t.setDaemon(True)
-    t.start()
+        print("stopping bot...")
+        bot_proxy._bot.stop_bot()
+        
 
-
-try: 
-    buffer_length_ms = 5000
-    window_length_ms = 1000
-    target_speech_rate = 120 # words/minute
-
-    state = ProgramState()
-    bot_proxy = bot.init_bot()
-    raw_audio_frames_queue = queue.Queue()
-    speech_chunks_queue = queue.Queue()
-
-    bot_proxy.set_target_user("goodmove")
-
-    stream = sd.InputStream(channels=CHANNELS, samplerate=SAMPLE_RATE, callback=mk_audio_callback(state, raw_audio_frames_queue))
-
-    with stream:
-        run_daemon(lambda: raw_audio_processor(raw_audio_frames_queue, speech_chunks_queue, buffer_length_ms, window_length_ms, SAMPLE_RATE))
-        run_daemon(lambda: audio_chunks_processor(state, bot_proxy, speech_chunks_queue, target_speech_rate))
-    # run_daemon(lambda : send_dummy_messages(speech_chunks_queue))
-    
-        run_main_loop(state)
-
-    print("stopping bot...")
-    bot_proxy._bot.stop_bot()
-    
-
-except KeyboardInterrupt:
-    print("Finished")
-except Exception as e:
-    print(e)
+    except KeyboardInterrupt:
+        print("Finished")
+    except Exception as e:
+        print(e)
