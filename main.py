@@ -9,6 +9,15 @@ block_time = 1 # seconds
 block_size = block_time * sampling_rate
 
 
+class SpeechChunk:
+
+    def __init__(self, data, duration_ms, sample_rate) -> None:
+        self.data = data
+        self.duration_ms = duration_ms
+        self.sample_rate = sample_rate
+
+
+
 def mk_audio_callback(frames_queue):
     def audio_callback(indata, frames, time, status):
         frames_queue.put(indata[:,0])
@@ -16,7 +25,7 @@ def mk_audio_callback(frames_queue):
     return audio_callback
     
 
-def raw_audio_processor(raw_frames_queue: queue.Queue, buffered_audio_queue: queue.Queue, buffer_length_ms: int, window_length_ms: int, sample_rate: int):
+def raw_audio_processor(raw_frames_queue: queue.Queue, speech_chunks_queue: queue.Queue, buffer_length_ms: int, window_length_ms: int, sample_rate: int):
     # insert incoming frames into cyclic buffer
 
     window_size = int(buffer_length_ms / 1000.0 * sample_rate)
@@ -55,7 +64,8 @@ def raw_audio_processor(raw_frames_queue: queue.Queue, buffered_audio_queue: que
             buffer[current_buffer_pos : current_buffer_pos + to_take] = frame[:to_take]
 
             # send data for further processing
-            buffered_audio_queue.put(buffer[0:window_size])
+            chunk = SpeechChunk(data = buffer[0:window_size], duration_ms=buffer_length_ms, sample_rate=sample_rate)
+            speech_chunks_queue.put(chunk)
 
             buffer[0:window_size-window_hop_size] = buffer[window_hop_size:window_size]
             buf_update_start = window_hop_size
@@ -77,6 +87,7 @@ def notify_too_fast():
     # FIXME: add implementation
     pass
 
+
 def audio_chunks_processor(buffered_audio_queue: queue.Queue, target_speech_rate: float):
     """
     target_speech_rate - words per minute
@@ -89,14 +100,12 @@ def audio_chunks_processor(buffered_audio_queue: queue.Queue, target_speech_rate
     notifications_interval_ms = 5000
 
     while True:
-        audio_block = buffered_audio_queue.get()
-        sampling_rate = 1 # FIXME
-        audio_length = 5 # seconds FIXME
+        speech_chunk: SpeechChunk = buffered_audio_queue.get()
 
-        syllables_count = count_syllables(audio_block, sampling_rate) / audio_length
+        syllables_per_second = count_syllables(speech_chunk.data, speech_chunk.sample_rate) / (speech_chunk.duration_ms * 1000)
 
-        if syllables_count > target_speech_rate:
-            print(f"speech rate is too large: {syllables_count}")
+        if syllables_per_second > target_syllables_per_seconds:
+            print(f"speech rate is too large: {syllables_per_second}")
 
             now = time.time_ns() // 1_000_000 
             if last_notification_sent_at is None or (now - last_notification_sent_at >= notifications_interval_ms):
