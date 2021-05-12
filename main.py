@@ -2,12 +2,28 @@ import sounddevice as sd
 import time
 import queue
 import numpy as np
+import threading
+
+import bot
+
 
 CHANNELS = 1
-sampling_rate = 22050
-block_time = 1 # seconds
-block_size = block_time * sampling_rate
+SAMPLE_RATE = 22050
 
+class States:
+    IDLE = "IDLE"
+    RUNNING = "RUNNING"
+
+class ProgramState:
+
+    def __init__(self) -> None:
+        self.state = States.IDLE
+
+    def is_running() -> bool:
+        return state.state == States.RUNNING
+
+    def is_idle() -> bool:
+        return state.state == States.IDLE
 
 class SpeechChunk:
 
@@ -18,24 +34,22 @@ class SpeechChunk:
 
 
 
-def mk_audio_callback(frames_queue):
+def mk_audio_callback(state: ProgramState, frames_queue: queue.Queue):
     def audio_callback(indata, frames, time, status):
-        frames_queue.put(indata[:,0])
+        if (state.state == States.RUNNING):
+            frames_queue.put(indata[:,0])
 
     return audio_callback
     
 
 def raw_audio_processor(raw_frames_queue: queue.Queue, speech_chunks_queue: queue.Queue, buffer_length_ms: int, window_length_ms: int, sample_rate: int):
-    # insert incoming frames into cyclic buffer
-
-    window_size = int(buffer_length_ms / 1000.0 * sample_rate)
+    chunk_size = int(buffer_length_ms / 1000.0 * sample_rate)
     window_hop_size = int(window_length_ms / 1000.0 * sample_rate)
-    buffer_size = int((buffer_length_ms + window_length_ms) / 1000.0 * sample_rate)
+    buffer_size = chunk_size + (2 * window_hop_size)
     buffer = np.zeros(buffer_size)
     frame = None
     
     current_buffer_pos = 0
-    buffer_edge_pos = window_size
 
     
     while True:
@@ -59,69 +73,135 @@ def raw_audio_processor(raw_frames_queue: queue.Queue, speech_chunks_queue: queu
         frame_update_start = 0
         frame_update_end = frame_size
 
-        if buf_update_end >= buffer_edge_pos:
-            to_take = buffer_edge_pos - current_buffer_pos
+        if buf_update_end >= chunk_size:
+            to_take = chunk_size - current_buffer_pos
             buffer[current_buffer_pos : current_buffer_pos + to_take] = frame[:to_take]
 
             # send data for further processing
-            chunk = SpeechChunk(data = buffer[0:window_size], duration_ms=buffer_length_ms, sample_rate=sample_rate)
+            chunk = SpeechChunk(data = buffer[:chunk_size], duration_ms=buffer_length_ms, sample_rate=sample_rate)
             speech_chunks_queue.put(chunk)
 
-            buffer[0:window_size-window_hop_size] = buffer[window_hop_size:window_size]
-            buf_update_start = window_hop_size
+            buffer[0:chunk_size-window_hop_size] = buffer[window_hop_size:chunk_size]
+            buf_update_start = chunk_size-window_hop_size
             buf_update_end = buf_update_start + frame_size - to_take
 
             frame_update_start = to_take
             frame_update_end = frame_size
 
         buffer[buf_update_start:buf_update_end] = frame[frame_update_start:frame_update_end]
-        current_buffer_pos = buf_update_end % buffer_edge_pos
+        current_buffer_pos = buf_update_end
 
         
 
 def count_syllables(audio, sampling_rate):
     # FIXME: add implementation
-    return 1
+    return 12
 
-def notify_too_fast():
-    # FIXME: add implementation
-    pass
+def notify_too_fast(bot_proxy: bot.BotProxy):
+    try:
+        bot_proxy.send_notification()
+    except Exception as e:
+        print("Failed to send notification")
+        print(e)
 
 
-def audio_chunks_processor(buffered_audio_queue: queue.Queue, target_speech_rate: float):
+def audio_chunks_processor(state: ProgramState, bot_proxy: bot.BotProxy, buffered_audio_queue: queue.Queue, target_speech_rate: float):
     """
     target_speech_rate - words per minute
     """
 
-    target_syllables_per_seconds = target_speech_rate * 4.0 / 60
+    target_syllables_per_seconds = target_speech_rate * 3.0 / 60
     print(f"target speech rate: {target_syllables_per_seconds} syl/sec")
 
     last_notification_sent_at = None
     notifications_interval_ms = 5000
 
     while True:
-        speech_chunk: SpeechChunk = buffered_audio_queue.get()
+        try:
+            speech_chunk: SpeechChunk = buffered_audio_queue.get()
+            print("took audio chunk")
 
-        syllables_per_second = count_syllables(speech_chunk.data, speech_chunk.sample_rate) / (speech_chunk.duration_ms * 1000)
+            syllables_per_second = count_syllables(speech_chunk.data, speech_chunk.sample_rate) / (speech_chunk.duration_ms / 1000)
 
-        if syllables_per_second > target_syllables_per_seconds:
-            print(f"speech rate is too large: {syllables_per_second}")
+            print(f"syl/sec: {syllables_per_second}")
 
-            now = time.time_ns() // 1_000_000 
-            if last_notification_sent_at is None or (now - last_notification_sent_at >= notifications_interval_ms):
-                last_notification_sent_at = now
-                notify_too_fast()
+            if syllables_per_second > target_syllables_per_seconds:
+                print(f"speech rate is too large: {syllables_per_second}")
+
+                now = time.time_ns() // 1_000_000 
+                if state.is_running() and (last_notification_sent_at is None or (now - last_notification_sent_at >= notifications_interval_ms)):
+                    last_notification_sent_at = now
+                    notify_too_fast(bot_proxy)
+        except Exception as e:
+            print(e)
 
 
 
+def run_main_loop(state: ProgramState):
+    input_text = None
+
+    try:
+        while input_text != 'finish':
+            input_text = input("What should I do next? [start, stop, finish]\n").strip()
+
+            if len(input_text) == 0:
+                continue
+
+            if input_text == 'start':
+                state.state = States.RUNNING
+            elif input_text == 'stop' or input_text == 'finish':
+                state.state = States.IDLE
+            else:
+                print(f'Unknown command: {input_text}')
+
+            
+    except KeyboardInterrupt:
+        print("Finished")
+    except Exception as e:
+        print(e)
+
+def send_dummy_messages(speech_chunks_queue):
+    while True:
+        try:
+            speech_chunks_queue.put(SpeechChunk([], buffer_length_ms, SAMPLE_RATE))
+            print("put dummy chunk")
+            
+        except Exception as e:
+            print(e)
+        
+        time.sleep(5)
+
+def run_daemon(callable):
+    t = threading.Thread(None, callable)
+    t.setDaemon(True)
+    t.start()
 
 
 try: 
+    buffer_length_ms = 5000
+    window_length_ms = 1000
+    target_speech_rate = 120 # words/minute
+
+    state = ProgramState()
+    bot_proxy = bot.init_bot()
     raw_audio_frames_queue = queue.Queue()
-    stream = sd.InputStream(channels=CHANNELS, samplerate=sampling_rate, callback=mk_audio_callback(raw_audio_frames_queue))
+    speech_chunks_queue = queue.Queue()
+
+    bot_proxy.set_target_user("goodmove")
+
+    stream = sd.InputStream(channels=CHANNELS, samplerate=SAMPLE_RATE, callback=mk_audio_callback(state, raw_audio_frames_queue))
 
     with stream:
-        time.sleep(10000)
+        run_daemon(lambda: raw_audio_processor(raw_audio_frames_queue, speech_chunks_queue, buffer_length_ms, window_length_ms, SAMPLE_RATE))
+        run_daemon(lambda: audio_chunks_processor(state, bot_proxy, speech_chunks_queue, target_speech_rate))
+    # run_daemon(lambda : send_dummy_messages(speech_chunks_queue))
+    
+        run_main_loop(state)
+
+    print("stopping bot...")
+    bot_proxy._bot.stop_bot()
+    
+
 except KeyboardInterrupt:
     print("Finished")
 except Exception as e:
