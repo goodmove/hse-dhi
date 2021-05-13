@@ -5,6 +5,7 @@ import numpy as np
 import threading
 
 import bot
+from sylnet.lib import SylNet
 
 
 # *************** Utils ***************
@@ -26,7 +27,7 @@ class ProgramState:
     def __init__(self) -> None:
         self.state = States.IDLE
 
-    def is_running() -> bool:
+    def is_running(self) -> bool:
         return state.state == States.RUNNING
 
     def is_idle() -> bool:
@@ -101,9 +102,8 @@ def raw_audio_processor(raw_frames_queue: queue.Queue, speech_chunks_queue: queu
 
         
 
-def count_syllables(audio, sampling_rate):
-    # FIXME: add implementation
-    return 12
+def count_syllables(sylnet: SylNet, audio, sampling_rate):
+    return sylnet.run(audio, sampling_rate)
 
 def notify_too_fast(bot_proxy: bot.BotProxy):
     try:
@@ -113,7 +113,7 @@ def notify_too_fast(bot_proxy: bot.BotProxy):
         print(e)
 
 
-def audio_chunks_processor(state: ProgramState, bot_proxy: bot.BotProxy, buffered_audio_queue: queue.Queue, target_speech_rate: float):
+def audio_chunks_processor(state: ProgramState, sylnet: SylNet, bot_proxy: bot.BotProxy, buffered_audio_queue: queue.Queue, target_speech_rate: float):
     """
     target_speech_rate - words per minute
     """
@@ -129,7 +129,7 @@ def audio_chunks_processor(state: ProgramState, bot_proxy: bot.BotProxy, buffere
             speech_chunk: SpeechChunk = buffered_audio_queue.get()
             print("took audio chunk")
 
-            syllables_per_second = count_syllables(speech_chunk.data, speech_chunk.sample_rate) / (speech_chunk.duration_ms / 1000)
+            syllables_per_second = count_syllables(sylnet, speech_chunk.data, speech_chunk.sample_rate) / (speech_chunk.duration_ms / 1000)
 
             print(f"syl/sec: {syllables_per_second}")
 
@@ -176,10 +176,11 @@ if __name__ == "__main__":
         CHANNELS = 1
         SAMPLE_RATE = 22050
         USERNAME = "goodmove"
+        sylnet_impl = SylNet()
 
         buffer_length_ms = 5000
         window_length_ms = 1000
-        target_speech_rate = 120 # words per minute
+        target_speech_rate = 100 # words per minute
 
         state = ProgramState()
         bot_proxy = bot.init_bot()
@@ -192,7 +193,7 @@ if __name__ == "__main__":
 
         with stream:
             run_daemon(lambda: raw_audio_processor(raw_audio_frames_queue, speech_chunks_queue, buffer_length_ms, window_length_ms, SAMPLE_RATE))
-            run_daemon(lambda: audio_chunks_processor(state, bot_proxy, speech_chunks_queue, target_speech_rate))
+            run_daemon(lambda: audio_chunks_processor(state, sylnet_impl, bot_proxy, speech_chunks_queue, target_speech_rate))
         
             run_main_loop(state)
 
