@@ -177,6 +177,7 @@ if __name__ == "__main__":
         SAMPLE_RATE = 22050
         USERNAME = "goodmove"
         sylnet_impl = SylNet()
+        sylnet_impl.init()
 
         buffer_length_ms = 5000
         window_length_ms = 1000

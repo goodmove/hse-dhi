@@ -30,6 +30,7 @@ MEAN = np.load(means_path)  # Z norm data based on training data mean and std
 STD = np.load(std_path)
 frame_size = round(0.025*REQUIRED_SAMPLING_RATE)
 frame_step = round(0.01*REQUIRED_SAMPLING_RATE)
+MELS_DIMENSION = 24
 
 ########### Mandatory Operations for TF 2.0. #############
 
@@ -42,11 +43,46 @@ tf.compat.v1.reset_default_graph()
 class SylNet:
 
     def __init__(self) -> None:
-        pass
-        # self.session = create_preloaded_session(MODEL_PATH)
+        self._session = None
+        self._x = None
+        self._logits = None
+        self._predictions = None
+
+    def init(self):
+        session, x, logits, predictions, ids, ids_len, is_train = load_model(MODEL_PATH)
+
+        self._session = session
+        self._x = x
+        self._logits = logits
+        self._predictions = predictions
+        self._ids = ids
+        self._ids_len = ids_len
+        self._is_train = is_train
+
     
     def run(self, audio_data, sampling_rate):
-        return run_model(audio_data, sampling_rate)
+        start_ts = time.time()
+
+        y = librosa.core.resample(y=audio_data, orig_sr=sampling_rate, target_sr=REQUIRED_SAMPLING_RATE)
+        normalized = librosa.util.normalize(y)
+        X = np.transpose(20*np.log10(librosa.feature.melspectrogram(y=normalized, sr=REQUIRED_SAMPLING_RATE, n_mels=MELS_DIMENSION, n_fft=frame_size, hop_length=frame_step)+0.00000000001))    
+        X = (X - MEAN)/STD
+        
+        X_mini = X
+        X_mini = X_mini[np.newaxis,:,:]
+        l_mini = np.asarray([X_mini.shape[1]],dtype=np.int32)
+        E_list = np.asarray([[0,X_mini.shape[1]-1]])
+        PRED = self._session.run([self._predictions], feed_dict={self._x: X_mini, self._ids:E_list, self._ids_len:l_mini, self._is_train:False})
+
+        Y = sum(sum(np.asarray(PRED[0]>=0.5, dtype=np.float32)))
+
+        print(f"computed syllables count: {Y}")
+
+        execution_time = time.time() - start_ts
+        print(f"execution time: {execution_time}")
+
+        return Y
+
 
     def shutfdown(self):
         self.session.close()
@@ -69,19 +105,11 @@ def create_preloaded_session(model_path) -> tf.compat.v1.Session:
 
 ########### Transform Audio Chunk #############
 
-def run_model(audio_data, sampling_rate):
-    start_ts = time.time()
-
-    X = np.ndarray((1,),dtype=object) # such weird shape is required. FIXME: remove this constraint?
-    y = librosa.core.resample(y=audio_data, orig_sr=sampling_rate, target_sr=REQUIRED_SAMPLING_RATE)
-    normalized = librosa.util.normalize(y)
-    X[0] = np.transpose(20*np.log10(librosa.feature.melspectrogram(y=normalized, sr=REQUIRED_SAMPLING_RATE, n_mels=24, n_fft=frame_size, hop_length=frame_step)+0.00000000001))
-    X[0] = (X[0] - MEAN)/STD
-
+def load_model(model_path):
     residual_channels = 128
     filter_width = 5
     dilations = [1]*10
-    input_channels = X[0].shape[1]
+    input_channels = MELS_DIMENSION
     output_channels = MAX_DETECTED_SYLLABLES
     postnet_channels= 128
     droupout_rate = 0.5
@@ -120,28 +148,9 @@ def run_model(audio_data, sampling_rate):
 
     init_op = tf.group(tf.compat.v1.global_variables_initializer(), tf.compat.v1.local_variables_initializer())
     session.run(init_op)
-    saver.restore(session, MODEL_PATH)
+    saver.restore(session, model_path)
 
-
-    no_utt = X.shape[0]
-    PRED = np.ndarray((no_utt,),dtype=object)
-    for n_val in range(no_utt):
-        X_mini = X[n_val]
-        X_mini = X_mini[np.newaxis,:,:]
-        l_mini = np.asarray([X_mini.shape[1]],dtype=np.int32)
-        E_list = np.asarray([[0,X_mini.shape[1]-1]])
-        PRED[n_val] = session.run([predictions], feed_dict={x: X_mini, ids:E_list, ids_len:l_mini,is_train:False})
-
-    Y = np.zeros(no_utt)
-    for n_val in range(no_utt):
-        Y[n_val] = sum(sum(np.asarray(PRED[n_val][0]>=0.5, dtype=np.float32)))
-
-    print(f"computed syllables count: {Y[0]}")
-
-    execution_time = time.time() - start_ts
-    print(f"execution time: {execution_time}")
-
-    return Y[0]
+    return session, x, logits, predictions, ids, ids_len, is_train
 
 
 if __name__ == "__main__":
@@ -149,6 +158,8 @@ if __name__ == "__main__":
     signal, sr = librosa.load(audio_file)
 
     sylnet_impl = SylNet()
+    sylnet_impl.init()
+    
     syllables = sylnet_impl.run(signal, sr)
     print(syllables)
 
